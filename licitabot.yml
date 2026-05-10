@@ -1,0 +1,95 @@
+# .github/workflows/licitabot.yml
+name: LicitaBot — Ciclo Automático
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'    # A cada 4 horas (UTC)
+    # Exemplos:
+    # '0 12 * * *'           → todo dia às 9h (Brasília = UTC-3)
+    # '0 9,15,21 * * *'      → 6h, 12h, 18h (Brasília)
+    # '0 12 * * 1-5'         → dias úteis às 9h (Brasília)
+
+  workflow_dispatch:          # Permite rodar manualmente pelo GitHub
+    inputs:
+      dias_atras:
+        description: 'Quantos dias atrás coletar'
+        required: false
+        default: '1'
+
+jobs:
+  coletar-e-analisar:
+    name: Coletar e Analisar Licitações
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Restaurar banco de dados (cache entre execuções)
+        uses: actions/cache@v4
+        with:
+          path: licitacoes.db
+          key: licitacoes-db-${{ github.ref_name }}
+          restore-keys: licitacoes-db-
+
+      - name: Inicializar banco de dados
+        run: python database.py
+        env:
+          DATABASE_PATH: licitacoes.db
+
+      - name: Executar ciclo de coleta e análise
+        run: python agendador.py
+        env:
+          # ── Provider de IA ────────────────────────────────────────────
+          # Configure em: Settings → Secrets and variables → Actions
+          IA_PROVIDER: ${{ vars.IA_PROVIDER || 'groq' }}
+
+          # Groq (grátis em console.groq.com)
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL || 'llama-3.3-70b-versatile' }}
+
+          # Gemini (grátis em aistudio.google.com)
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.0-flash' }}
+
+          # ── Telegram ──────────────────────────────────────────────────
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+
+          # ── Config ────────────────────────────────────────────────────
+          DATABASE_PATH: licitacoes.db
+          SCORE_MINIMO_ALERTA: '65'
+          INTERVALO_COLETA_HORAS: '4'
+
+      - name: Estatísticas do ciclo
+        if: always()
+        run: |
+          python -c "
+          from database import estatisticas
+          import json
+          s = estatisticas()
+          print('=== Resultado do ciclo ===')
+          print(f'Total licitações : {s[\"total_licitacoes\"]}')
+          print(f'Analisadas       : {s[\"analisadas\"]}')
+          print(f'Oportunidades    : {s[\"oportunidades_score_alto\"]}')
+          " || true
+        env:
+          DATABASE_PATH: licitacoes.db
+
+      - name: Salvar banco como artefato
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: licitacoes-db-${{ github.run_number }}
+          path: licitacoes.db
+          retention-days: 7
