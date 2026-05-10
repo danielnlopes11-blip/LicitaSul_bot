@@ -1,138 +1,217 @@
 """
-agendador.py
-Orquestra coleta + análise + alertas.
-Tenta /publicacao primeiro, se não achar nada usa /proposta (abertas).
+coletor_pncp.py
+Coleta licitacoes da API oficial do PNCP.
+
+URL correta (API de Consulta):
+  https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao
+  https://pncp.gov.br/api/consulta/v1/contratacoes/proposta
 """
 
-import os
+import httpx
 import asyncio
+import json
 import logging
-import argparse
-from contextlib import asynccontextmanager
-from dotenv import load_dotenv
-
-load_dotenv()
-
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from database import init_db, buscar_licitacoes, buscar_por_id, buscar_analise, estatisticas
-from coletor_pncp import coletar_periodo, coletar_abertas
-from analisador_ia import analisar_pendentes
+from datetime import datetime, timedelta
+from typing import Optional
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-SCORE_MINIMO_ALERTA    = int(os.getenv("SCORE_MINIMO_ALERTA", "65"))
-INTERVALO_COLETA_HORAS = int(os.getenv("INTERVALO_COLETA_HORAS", "4"))
-TELEGRAM_CHAT_IDS      = [c for c in os.getenv("TELEGRAM_CHAT_IDS", "").split(",") if c.strip()]
+BASE_URL = "https://pncp.gov.br/api/consulta/v1"
+
+HEADERS = {
+    "Accept": "application/json",
+    "User-Agent": "BotLicitacoes/1.0",
+}
+
+FILTROS = {
+    "palavras_chave": [
+        "software", "sistema", "tecnologia", "TI", "consultoria",
+        "desenvolvimento", "aplicativo", "plataforma", "licenca", "suporte",
+    ],
+    "valor_minimo": 10_000,
+    "valor_maximo": 5_000_000,
+    "estados": [],   # vazio = todos
+}
 
 
-# ── Ciclo principal ───────────────────────────────────────────────────────────
+# ── Chamadas HTTP ─────────────────────────────────────────────────────────────
 
-async def ciclo_completo():
-    from datetime import datetime
-    log.info("=" * 60)
-    log.info(f"🚀 Ciclo iniciado: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-
-    # 1. Coleta por data de publicação
-    novas = await coletar_periodo(dias_atras=2)
-
-    # 2. Se não achou nada, tenta licitações com proposta aberta
-    if not novas:
-        log.info("Tentando endpoint /proposta (licitações abertas agora)...")
-        novas = await coletar_abertas()
-
-    log.info(f"📥 {len(novas)} novas licitações coletadas.")
-
-    # 3. Análise IA
-    oportunidades = await analisar_pendentes(
-        score_minimo_alerta=SCORE_MINIMO_ALERTA,
-        max_por_ciclo=30,
-    )
-    log.info(f"🤖 {len(oportunidades)} oportunidades com score >= {SCORE_MINIMO_ALERTA}.")
-
-    # 4. Alertas Telegram
-    if oportunidades and TELEGRAM_CHAT_IDS:
-        try:
-            from telegram import Bot
-            bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN", ""))
-            for chat_id in TELEGRAM_CHAT_IDS:
-                for item in oportunidades[:5]:
-                    analise = item.get("analise", {})
-                    msg = (
-                        f"🚨 *Nova oportunidade!* (score {analise.get('score', 0)}/100)\n\n"
-                        f"📋 {item['objeto'][:100]}\n"
-                        f"💰 R$ {item.get('valor_estimado', 0):,.0f}\n"
-                        f"✅ {analise.get('recomendacao', '')}"
-                    )
-                    await bot.send_message(chat_id=chat_id.strip(), text=msg, parse_mode="Markdown")
-        except Exception as e:
-            log.warning(f"Erro ao enviar Telegram: {e}")
-
-    log.info(f"✅ Ciclo concluído. Próximo em {INTERVALO_COLETA_HORAS}h.")
-    return oportunidades
+async def buscar_contratacoes(data_inicio: str, data_fim: str, pagina: int = 1, tamanho: int = 50) -> dict:
+    """Endpoint: /contratacoes/publicacao — filtra por data de publicacao."""
+    params = {
+        "dataInicial":   data_inicio,
+        "dataFinal":     data_fim,
+        "pagina":        pagina,
+        "tamanhoPagina": tamanho,
+    }
+    async with httpx.AsyncClient(headers=HEADERS, timeout=30) as client:
+        url = f"{BASE_URL}/contratacoes/publicacao"
+        log.info(f"GET {url} {params}")
+        resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        return resp.json()
 
 
-async def daemon():
-    init_db()
+async def buscar_contratacoes_proposta(pagina: int = 1, tamanho: int = 50) -> dict:
+    """Endpoint: /contratacoes/proposta — licitacoes com propostas abertas agora."""
+    params = {"pagina": pagina, "tamanhoPagina": tamanho}
+    async with httpx.AsyncClient(headers=HEADERS, timeout=30) as client:
+        url = f"{BASE_URL}/contratacoes/proposta"
+        log.info(f"GET {url} {params}")
+        resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+
+# ── Filtros e formatacao ──────────────────────────────────────────────────────
+
+def aplicar_filtros(item: dict) -> bool:
+    valor = item.get("valorTotalEstimado") or item.get("valorTotalHomologado") or 0
+    if FILTROS["valor_minimo"] and valor < FILTROS["valor_minimo"]:
+        return False
+    if FILTROS["valor_maximo"] and valor > FILTROS["valor_maximo"]:
+        return False
+    if FILTROS["estados"]:
+        uf = (item.get("unidadeOrgao") or {}).get("ufSigla", "")
+        if uf not in FILTROS["estados"]:
+            return False
+    if FILTROS["palavras_chave"]:
+        objeto = (item.get("objetoCompra") or "").lower()
+        if not any(p.lower() in objeto for p in FILTROS["palavras_chave"]):
+            return False
+    return True
+
+
+def formatar(raw: dict) -> dict:
+    orgao = raw.get("unidadeOrgao") or {}
+    return {
+        "id_externo":       raw.get("numeroControlePNCP") or raw.get("numeroCompra", ""),
+        "numero_compra":    raw.get("numeroCompra", ""),
+        "ano":              raw.get("anoCompra"),
+        "objeto":           raw.get("objetoCompra", ""),
+        "modalidade":       raw.get("modalidadeNome", ""),
+        "situacao":         raw.get("situacaoCompraNome", ""),
+        "valor_estimado":   raw.get("valorTotalEstimado") or 0,
+        "valor_homologado": raw.get("valorTotalHomologado"),
+        "data_publicacao":  raw.get("dataPublicacaoPncp"),
+        "data_encerramento": raw.get("dataEncerramentoProposta"),
+        "orgao_nome":       orgao.get("nomeUnidade", ""),
+        "orgao_cnpj":       orgao.get("cnpj", ""),
+        "orgao_uf":         orgao.get("ufSigla", ""),
+        "orgao_municipio":  orgao.get("municipioNome", ""),
+        "link_pncp":        raw.get("linkSistemaOrigem", ""),
+        "itens":            [],
+        "documentos":       [],
+        "raw":              raw,
+    }
+
+
+# ── Pipelines de coleta ───────────────────────────────────────────────────────
+
+async def coletar_periodo(dias_atras: int = 2) -> list:
+    """Coleta licitacoes publicadas nos ultimos N dias."""
+    # Import do database aqui dentro para evitar circular import
+    from database import licitacao_ja_existe, salvar_licitacoes
+
+    hoje   = datetime.now()
+    inicio = (hoje - timedelta(days=dias_atras)).strftime("%Y%m%d")
+    fim    = hoje.strftime("%Y%m%d")
+
+    novas  = []
+    pagina = 1
+
     while True:
         try:
-            await ciclo_completo()
+            resultado = await buscar_contratacoes(inicio, fim, pagina=pagina)
+        except httpx.HTTPStatusError as e:
+            log.error(f"HTTP {e.response.status_code} na pagina {pagina}: {e.response.text[:200]}")
+            break
         except Exception as e:
-            log.error(f"Erro no ciclo: {e}", exc_info=True)
-        await asyncio.sleep(INTERVALO_COLETA_HORAS * 3600)
+            log.error(f"Erro na coleta pagina {pagina}: {e}")
+            break
+
+        dados         = resultado.get("data", [])
+        total_paginas = resultado.get("totalPaginas", 1)
+        log.info(f"Pagina {pagina}/{total_paginas} — {len(dados)} registros")
+
+        for raw in dados:
+            id_externo = raw.get("numeroControlePNCP") or raw.get("numeroCompra", "")
+            if licitacao_ja_existe(id_externo):
+                continue
+            if not aplicar_filtros(raw):
+                continue
+            novas.append(formatar(raw))
+
+        if pagina >= total_paginas:
+            break
+        pagina += 1
+        await asyncio.sleep(0.3)
+
+    if novas:
+        salvar_licitacoes(novas)
+        log.info(f"✅ {len(novas)} novas licitacoes salvas.")
+    else:
+        log.info("Nenhuma nova licitacao encontrada.")
+
+    return novas
 
 
-# ── API REST ──────────────────────────────────────────────────────────────────
+async def coletar_abertas() -> list:
+    """Coleta licitacoes com propostas abertas agora."""
+    from database import licitacao_ja_existe, salvar_licitacoes
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_db()
-    yield
+    novas  = []
+    pagina = 1
 
-api = FastAPI(title="LicitaBot API", version="1.0.0", lifespan=lifespan)
-api.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    while pagina <= 5:
+        try:
+            resultado = await buscar_contratacoes_proposta(pagina=pagina)
+        except Exception as e:
+            log.error(f"Erro em /proposta pagina {pagina}: {e}")
+            break
 
-@api.get("/licitacoes")
-def listar(
-    score_minimo: int = Query(0),
-    uf: str = Query(None),
-    sem_analise: bool = Query(False),
-    limit: int = Query(20),
-    offset: int = Query(0),
-):
-    return buscar_licitacoes(score_minimo=score_minimo, uf=uf, sem_analise=sem_analise, limit=limit, offset=offset)
+        dados         = resultado.get("data", [])
+        total_paginas = resultado.get("totalPaginas", 1)
+        log.info(f"[ABERTAS] Pagina {pagina}/{total_paginas} — {len(dados)} registros")
 
-@api.get("/licitacoes/{lid}")
-def detalhe(lid: int):
-    lic = buscar_por_id(lid)
-    if not lic:
-        raise HTTPException(404, "Não encontrada")
-    return {"licitacao": lic, "analise": buscar_analise(lid)}
+        for raw in dados:
+            id_externo = raw.get("numeroControlePNCP") or raw.get("numeroCompra", "")
+            if licitacao_ja_existe(id_externo):
+                continue
+            if not aplicar_filtros(raw):
+                continue
+            novas.append(formatar(raw))
 
-@api.get("/stats")
-def stats():
-    return estatisticas()
+        if pagina >= total_paginas:
+            break
+        pagina += 1
+        await asyncio.sleep(0.3)
 
-@api.post("/ciclo")
-async def ciclo_manual():
-    ops = await ciclo_completo()
-    return {"oportunidades": len(ops)}
+    if novas:
+        salvar_licitacoes(novas)
+        log.info(f"✅ {len(novas)} licitacoes abertas salvas.")
+    else:
+        log.info("Nenhuma licitacao aberta encontrada com os filtros.")
+
+    return novas
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--daemon", action="store_true")
-    parser.add_argument("--api",    action="store_true")
-    args = parser.parse_args()
+    import sys
+    from database import init_db
+    init_db()
 
-    if args.api:
-        import uvicorn
-        uvicorn.run("agendador:api", host="0.0.0.0", port=int(os.getenv("API_PORT", 8000)), reload=True)
-    elif args.daemon:
-        asyncio.run(daemon())
+    modo = sys.argv[1] if len(sys.argv) > 1 else "1"
+
+    if modo == "abertas":
+        result = asyncio.run(coletar_abertas())
     else:
-        init_db()
-        asyncio.run(ciclo_completo())
+        dias = int(modo) if modo.isdigit() else 2
+        result = asyncio.run(coletar_periodo(dias_atras=dias))
+
+    print(f"\nTotal coletado: {len(result)}")
+    if result:
+        print(json.dumps(result[0], ensure_ascii=False, indent=2))
