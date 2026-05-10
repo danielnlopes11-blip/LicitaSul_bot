@@ -1,0 +1,19 @@
+# requirements.txt
+# Bot Analisador de Licitações Públicas
+# Instale com: pip install -r requirements.txt
+
+# ── Core ──────────────────────────────────────────────────────────────────
+anthropic>=0.40.0          # SDK oficial do Claude (IA)
+httpx>=0.27.0              # HTTP assíncrono (coleta PNCP)
+fastapi>=0.115.0           # API REST
+uvicorn[standard]>=0.30.0  # Servidor ASGI
+
+# ── Telegram Bot ──────────────────────────────────────────────────────────
+python-telegram-bot>=21.0  # Bot Telegram
+
+# ── Extração de PDF (editais) ─────────────────────────────────────────────
+pdfplumber>=0.11.0         # Extração de texto de PDFs
+
+# ── Utilitários ───────────────────────────────────────────────────────────
+python-dotenv>=1.0.0       # Variáveis de ambiente do .env
+schedule>=1.2.0            # Agendamento simples (alternativa ao cron)

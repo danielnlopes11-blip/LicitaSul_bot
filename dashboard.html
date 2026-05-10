@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bot Licitações — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #161920;
+    --surface2: #1e2230;
+    --border: rgba(255,255,255,0.07);
+    --border2: rgba(255,255,255,0.12);
+    --text: #e8eaf0;
+    --muted: #7a8099;
+    --accent: #3b82f6;
+    --accent2: #60a5fa;
+    --green: #22c55e;
+    --yellow: #facc15;
+    --red: #ef4444;
+    --purple: #a855f7;
+    --font: 'Syne', sans-serif;
+    --mono: 'IBM Plex Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    min-height: 100vh;
+  }
+
+  /* Layout */
+  .shell { display: flex; min-height: 100vh; }
+  .sidebar {
+    width: 220px; min-height: 100vh; background: var(--surface);
+    border-right: 1px solid var(--border); padding: 24px 16px;
+    display: flex; flex-direction: column; gap: 8px; flex-shrink: 0;
+  }
+  .logo {
+    font-size: 15px; font-weight: 700; color: var(--text);
+    letter-spacing: -0.3px; padding: 0 8px 20px;
+    border-bottom: 1px solid var(--border); margin-bottom: 8px;
+  }
+  .logo span { color: var(--accent2); }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 10px; border-radius: 8px; cursor: pointer;
+    font-size: 13px; color: var(--muted); transition: all .15s;
+    border: none; background: none; width: 100%; text-align: left;
+  }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: rgba(59,130,246,0.12); color: var(--accent2); }
+  .nav-icon { font-size: 16px; width: 18px; text-align: center; }
+
+  .main { flex: 1; padding: 28px 32px; overflow-x: hidden; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* Header */
+  .page-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 24px;
+  }
+  .page-title { font-size: 22px; font-weight: 700; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-family: var(--mono);
+    padding: 3px 8px; border-radius: 4px; font-weight: 500;
+  }
+  .badge-green { background: rgba(34,197,94,.15); color: var(--green); }
+  .badge-yellow { background: rgba(250,204,21,.15); color: var(--yellow); }
+  .badge-red { background: rgba(239,68,68,.15); color: var(--red); }
+  .badge-blue { background: rgba(59,130,246,.15); color: var(--accent2); }
+  .badge-purple { background: rgba(168,85,247,.15); color: var(--purple); }
+
+  /* Cards métricas */
+  .metrics { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin-bottom: 24px; }
+  .metric {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 20px;
+  }
+  .metric-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+  .metric-value { font-size: 28px; font-weight: 700; font-family: var(--mono); }
+  .metric-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .metric-accent { border-top: 2px solid var(--accent); }
+  .metric-green { border-top: 2px solid var(--green); }
+  .metric-yellow { border-top: 2px solid var(--yellow); }
+  .metric-purple { border-top: 2px solid var(--purple); }
+
+  /* Grid de conteúdo */
+  .content-grid { display: grid; grid-template-columns: 1fr 340px; gap: 20px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px;
+  }
+  .card-title {
+    font-size: 13px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .6px; margin-bottom: 16px;
+  }
+
+  /* Tabela de licitações */
+  .lic-table { width: 100%; border-collapse: collapse; }
+  .lic-table th {
+    font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .4px; font-weight: 500; padding: 0 12px 10px;
+    text-align: left; border-bottom: 1px solid var(--border);
+  }
+  .lic-table td { padding: 13px 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
+  .lic-table tr:last-child td { border-bottom: none; }
+  .lic-table tr:hover td { background: var(--surface2); }
+  .lic-objeto { font-weight: 500; max-width: 280px; }
+  .lic-objeto p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
+  .lic-orgao { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .score-bar {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .score-num { font-family: var(--mono); font-size: 12px; font-weight: 500; min-width: 28px; }
+  .score-track {
+    width: 60px; height: 4px; background: var(--surface2);
+    border-radius: 2px; overflow: hidden;
+  }
+  .score-fill { height: 100%; border-radius: 2px; }
+  .score-high { background: var(--green); }
+  .score-mid { background: var(--yellow); }
+  .score-low { background: var(--red); }
+  .btn {
+    background: none; border: 1px solid var(--border2); color: var(--muted);
+    border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+    font-family: var(--font); transition: all .15s;
+  }
+  .btn:hover { background: var(--surface2); color: var(--text); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent2); border-color: var(--accent2); }
+
+  /* Sidebar direita */
+  .uf-list { display: flex; flex-direction: column; gap: 8px; }
+  .uf-row { display: flex; align-items: center; gap: 10px; }
+  .uf-label { font-family: var(--mono); font-size: 12px; font-weight: 500; min-width: 28px; }
+  .uf-track { flex: 1; height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+  .uf-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s; }
+  .uf-count { font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 24px; text-align: right; }
+
+  /* Filtros */
+  .filters {
+    display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .filter-select {
+    background: var(--surface2); border: 1px solid var(--border2); color: var(--text);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; font-family: var(--font);
+    cursor: pointer; outline: none;
+  }
+  .search-box {
+    background: var(--surface2); border: 1px solid var(--border2); color: var(--text);
+    border-radius: 6px; padding: 6px 12px; font-size: 12px; font-family: var(--font);
+    outline: none; flex: 1; min-width: 200px;
+  }
+  .search-box::placeholder { color: var(--muted); }
+  .search-box:focus { border-color: var(--accent); }
+
+  /* Detalhe modal */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.7); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border2);
+    border-radius: 16px; width: 600px; max-width: 95vw;
+    max-height: 85vh; overflow-y: auto; padding: 28px;
+  }
+  .modal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+  .modal-title { font-size: 15px; font-weight: 600; line-height: 1.4; max-width: 480px; }
+  .modal-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 20px; line-height: 1; padding: 0; }
+  .modal-section { margin-bottom: 18px; }
+  .modal-section-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px; }
+  .info-row { display: flex; gap: 8px; justify-content: space-between; font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .info-row:last-child { border-bottom: none; }
+  .info-key { color: var(--muted); }
+  .chip {
+    display: inline-flex; font-size: 11px; padding: 3px 9px; border-radius: 20px;
+    border: 1px solid var(--border2); color: var(--muted); margin: 3px;
+  }
+  .chip-risk { border-color: rgba(239,68,68,.3); color: #f87171; }
+  .chip-req { border-color: rgba(59,130,246,.3); color: var(--accent2); }
+  .chip-doc { border-color: rgba(168,85,247,.3); color: #c084fc; }
+  .rec-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 14px; font-weight: 700; padding: 8px 16px; border-radius: 8px;
+  }
+  .rec-participar { background: rgba(34,197,94,.15); color: var(--green); }
+  .rec-verificar { background: rgba(250,204,21,.15); color: var(--yellow); }
+  .rec-nao { background: rgba(239,68,68,.15); color: var(--red); }
+
+  /* Página análise manual */
+  .ia-form { display: flex; flex-direction: column; gap: 14px; }
+  .ia-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  textarea {
+    background: var(--surface2); border: 1px solid var(--border2); color: var(--text);
+    border-radius: 8px; padding: 12px; font-size: 13px; font-family: var(--mono);
+    resize: vertical; outline: none; width: 100%;
+  }
+  textarea:focus { border-color: var(--accent); }
+  .ia-result { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+
+  /* Animação loading */
+  .loading { display: flex; gap: 5px; align-items: center; padding: 12px 0; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s infinite; }
+  .dot:nth-child(2) { animation-delay: .2s; }
+  .dot:nth-child(3) { animation-delay: .4s; }
+  @keyframes pulse { 0%,100%{opacity:.3;transform:scale(1)} 50%{opacity:1;transform:scale(1.2)} }
+
+  /* Chart wrapper */
+  .chart-wrap { position: relative; height: 180px; }
+
+  @media (max-width: 900px) {
+    .sidebar { width: 60px; }
+    .logo, .nav-item span { display: none; }
+    .metrics { grid-template-columns: repeat(2,1fr); }
+    .content-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- Sidebar -->
+<nav class="sidebar">
+  <div class="logo">⚡ <span>LicitaBot</span></div>
+  <button class="nav-item active" onclick="showPage('dashboard',this)">
+    <span class="nav-icon">📊</span><span>Dashboard</span>
+  </button>
+  <button class="nav-item" onclick="showPage('licitacoes',this)">
+    <span class="nav-icon">📋</span><span>Licitações</span>
+  </button>
+  <button class="nav-item" onclick="showPage('analisar',this)">
+    <span class="nav-icon">🤖</span><span>Analisar</span>
+  </button>
+  <button class="nav-item" onclick="showPage('config',this)">
+    <span class="nav-icon">⚙️</span><span>Configurar</span>
+  </button>
+</nav>
+
+<!-- Main -->
+<main class="main">
+
+  <!-- ── Dashboard ── -->
+  <div class="page active" id="page-dashboard">
+    <div class="page-header">
+      <h1 class="page-title">Dashboard</h1>
+      <button class="btn btn-primary" onclick="simularCiclo()">▶ Executar ciclo agora</button>
+    </div>
+
+    <div class="metrics">
+      <div class="metric metric-accent">
+        <div class="metric-label">Total monitoradas</div>
+        <div class="metric-value" id="m-total">248</div>
+        <div class="metric-sub">últimos 30 dias</div>
+      </div>
+      <div class="metric metric-green">
+        <div class="metric-label">Oportunidades</div>
+        <div class="metric-value" id="m-op" style="color:var(--green)">37</div>
+        <div class="metric-sub">score ≥ 65</div>
+      </div>
+      <div class="metric metric-yellow">
+        <div class="metric-label">Valor total</div>
+        <div class="metric-value" id="m-valor" style="color:var(--yellow);font-size:20px">R$ 18,4M</div>
+        <div class="metric-sub">estimado</div>
+      </div>
+      <div class="metric metric-purple">
+        <div class="metric-label">Analisadas IA</div>
+        <div class="metric-value" id="m-ia" style="color:var(--purple)">189</div>
+        <div class="metric-sub">76% do total</div>
+      </div>
+    </div>
+
+    <div class="content-grid">
+      <div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-title">Tendência de coleta (7 dias)</div>
+          <div class="chart-wrap">
+            <canvas id="chartTendencia" role="img" aria-label="Gráfico de licitações coletadas por dia nos últimos 7 dias"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Top oportunidades recentes</div>
+          <table class="lic-table">
+            <thead>
+              <tr>
+                <th>Objeto</th>
+                <th>Valor</th>
+                <th>Score</th>
+                <th>Rec.</th>
+              </tr>
+            </thead>
+            <tbody id="top-oportunidades"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div class="card">
+          <div class="card-title">Por Estado (UF)</div>
+          <div class="uf-list" id="uf-list"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Por Modalidade</div>
+          <div class="chart-wrap" style="height:140px">
+            <canvas id="chartModal" role="img" aria-label="Pizza de modalidades"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Licitações ── -->
+  <div class="page" id="page-licitacoes">
+    <div class="page-header">
+      <h1 class="page-title">Licitações</h1>
+      <span id="count-badge" class="badge badge-blue">248 registros</span>
+    </div>
+    <div class="filters">
+      <input class="search-box" id="search" placeholder="Buscar por objeto, órgão..." oninput="filtrar()">
+      <select class="filter-select" id="filtro-uf" onchange="filtrar()">
+        <option value="">Todos os estados</option>
+      </select>
+      <select class="filter-select" id="filtro-rec" onchange="filtrar()">
+        <option value="">Todas recomendações</option>
+        <option value="PARTICIPAR">✅ Participar</option>
+        <option value="VERIFICAR">⚠️ Verificar</option>
+        <option value="NÃO PARTICIPAR">❌ Não participar</option>
+      </select>
+      <select class="filter-select" id="filtro-score" onchange="filtrar()">
+        <option value="0">Score mín: 0</option>
+        <option value="50">Score mín: 50</option>
+        <option value="65" selected>Score mín: 65</option>
+        <option value="80">Score mín: 80</option>
+      </select>
+    </div>
+    <div class="card">
+      <table class="lic-table">
+        <thead>
+          <tr>
+            <th>Objeto / Órgão</th>
+            <th>UF</th>
+            <th>Valor Est.</th>
+            <th>Encerra</th>
+            <th>Score</th>
+            <th>Rec.</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="lic-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── Analisar ── -->
+  <div class="page" id="page-analisar">
+    <div class="page-header">
+      <h1 class="page-title">Análise Manual com IA</h1>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+      <div class="card">
+        <div class="card-title">Dados da licitação</div>
+        <div class="ia-form">
+          <div>
+            <div class="ia-label">Objeto / Descrição</div>
+            <textarea id="ia-objeto" rows="3" placeholder="Ex: Contratação de empresa especializada em desenvolvimento de sistema de gestão..."></textarea>
+          </div>
+          <div>
+            <div class="ia-label">Trecho do edital (opcional)</div>
+            <textarea id="ia-edital" rows="5" placeholder="Cole aqui trechos do edital..."></textarea>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div>
+              <div class="ia-label">Valor estimado (R$)</div>
+              <input class="search-box" id="ia-valor" type="number" placeholder="150000">
+            </div>
+            <div>
+              <div class="ia-label">Modalidade</div>
+              <select class="filter-select" id="ia-modalidade" style="width:100%">
+                <option>Pregão Eletrônico</option>
+                <option>Concorrência</option>
+                <option>Dispensa</option>
+                <option>Inexigibilidade</option>
+                <option>Outro</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div>
+              <div class="ia-label">Órgão</div>
+              <input class="search-box" id="ia-orgao" placeholder="Nome do órgão">
+            </div>
+            <div>
+              <div class="ia-label">Estado</div>
+              <input class="search-box" id="ia-uf" placeholder="SC">
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="executarAnalise()" style="align-self:flex-start;padding:10px 24px">
+            🤖 Analisar com IA
+          </button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Resultado da análise</div>
+        <div id="ia-resultado">
+          <p style="color:var(--muted);font-size:13px">Preencha os dados e clique em "Analisar com IA" para ver o resultado.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Config ── -->
+  <div class="page" id="page-config">
+    <div class="page-header">
+      <h1 class="page-title">Configurações</h1>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+      <div class="card">
+        <div class="card-title">Perfil da Empresa</div>
+        <div class="ia-form">
+          <div><div class="ia-label">Nome da empresa</div><input class="search-box" value="Minha Empresa Ltda" style="width:100%"></div>
+          <div><div class="ia-label">Segmentos de atuação</div>
+          <textarea rows="3" placeholder="Desenvolvimento de software&#10;Consultoria em TI&#10;Suporte técnico">Desenvolvimento de software
+Consultoria em TI
+Suporte técnico</textarea></div>
+          <div><div class="ia-label">Palavras-chave de busca</div>
+          <textarea rows="2" placeholder="software, sistema, TI, consultoria">software, sistema, TI, consultoria, tecnologia</textarea></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div><div class="ia-label">Valor mínimo (R$)</div><input class="search-box" value="10000" style="width:100%"></div>
+            <div><div class="ia-label">Valor máximo (R$)</div><input class="search-box" value="5000000" style="width:100%"></div>
+          </div>
+          <div><div class="ia-label">Estados de interesse (vazio = todos)</div><input class="search-box" placeholder="SC,RS,SP,PR" style="width:100%"></div>
+          <button class="btn btn-primary" style="align-self:flex-start">💾 Salvar configurações</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Integrações</div>
+        <div class="ia-form">
+          <div>
+            <div class="ia-label">API Key Anthropic</div>
+            <input class="search-box" type="password" placeholder="sk-ant-..." style="width:100%">
+          </div>
+          <div>
+            <div class="ia-label">Token Bot Telegram</div>
+            <input class="search-box" type="password" placeholder="123456:ABC..." style="width:100%">
+          </div>
+          <div>
+            <div class="ia-label">Chat IDs para alertas</div>
+            <input class="search-box" placeholder="-100123456,987654" style="width:100%">
+          </div>
+          <div>
+            <div class="ia-label">Score mínimo para alerta</div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <input type="range" min="0" max="100" value="65" id="score-range" oninput="document.getElementById('score-val').textContent=this.value" style="flex:1">
+              <span id="score-val" style="font-family:var(--mono);font-size:14px;font-weight:500;min-width:30px">65</span>
+            </div>
+          </div>
+          <div>
+            <div class="ia-label">Intervalo de coleta (horas)</div>
+            <select class="filter-select" style="width:100%">
+              <option>1h</option><option>2h</option><option selected>4h</option><option>6h</option><option>12h</option><option>24h</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" style="align-self:flex-start">🔌 Salvar integrações</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+</div>
+
+<!-- Modal Detalhe -->
+<div class="modal-overlay" id="modal-overlay" onclick="fecharModal(event)">
+  <div class="modal" id="modal-content"></div>
+</div>
+
+<script>
+// ── Dados mockados (substituir por fetch() à API REST) ─────────────────────
+
+const LICITACOES = [
+  {id:1,objeto:"Contratação de empresa para desenvolvimento de sistema de gestão de contratos públicos integrado ao PNCP",orgao:"Prefeitura Municipal de Florianópolis",uf:"SC",valor:320000,encerra:"2026-06-15",score:92,recomendacao:"PARTICIPAR",modalidade:"Pregão Eletrônico",justificativa:"Objeto 100% alinhado ao perfil da empresa. Valor adequado. Prazo confortável.",requisitos:["Atestado técnico comprovando sistema similar","Capital social mínimo R$ 50.000","Certidão negativa de débitos trabalhistas"],riscos:["Prazo curto de implementação (90 dias)","Exigência de equipe mínima de 3 desenvolvedores"],documentos:["Atestado de capacidade técnica","Balanço patrimonial 2024","Certidões negativas (Federal, Estadual, Municipal, FGTS, CNDT)"],proximos_passos:["Baixar edital completo no PNCP","Verificar requisitos de atestado com RH","Preparar proposta técnica"]},
+  {id:2,objeto:"Licenciamento de plataforma de gestão de processos e consultoria técnica especializada",orgao:"Governo do Estado do Paraná — SEAP",uf:"PR",valor:850000,encerra:"2026-06-28",score:85,recomendacao:"PARTICIPAR",modalidade:"Concorrência",justificativa:"Alto valor e objeto alinhado. Verificar requisito de capital social.",requisitos:["Certidão de registro no CREA ou CRC","Comprovação de faturamento mínimo R$ 300k","Atestado de sistemas similares"],riscos:["Concorrência pode ter grandes empresas do setor","Exigência de garantia de proposta 1% do valor"],documentos:["Certidão de capacidade técnica","Balanço 2023 e 2024","Comprovante de patrimônio líquido"],proximos_passos:["Verificar exigência de capital social","Analisar concorrência no segmento estadual"]},
+  {id:3,objeto:"Suporte técnico e manutenção preventiva e corretiva de infraestrutura de TI",orgao:"Câmara Municipal de Curitiba",uf:"PR",valor:145000,encerra:"2026-05-30",score:78,recomendacao:"VERIFICAR",modalidade:"Pregão Eletrônico",justificativa:"Objeto parcialmente alinhado. Verificar se empresa tem expertise em infraestrutura.",requisitos:["Técnico certificado Microsoft/Cisco","Tempo de resposta ≤ 4h para chamados críticos"],riscos:["Prazo de encerramento próximo (22 dias)","Requer profissional certificado em redes"],documentos:["Certidão de registro no CREA","Atestado técnico de infraestrutura","Certidões negativas"],proximos_passos:["Verificar se possui técnico certificado Cisco/Microsoft","Avaliar capacidade de atendimento no prazo"]},
+  {id:4,objeto:"Aquisição de equipamentos de informática (notebooks, desktops, impressoras multifuncionais)",orgao:"Tribunal de Contas do Estado de SC",uf:"SC",valor:280000,encerra:"2026-06-10",score:31,recomendacao:"NÃO PARTICIPAR",modalidade:"Pregão Eletrônico",justificativa:"Objeto é revenda de hardware, fora do segmento da empresa.",requisitos:["Autorização de distribuidor das marcas","Garantia de 3 anos on-site"],riscos:["Margem muito baixa em hardware","Exige estoque ou parceria com distribuidor"],documentos:["Carta de autorização dos fabricantes"],proximos_passos:["Desconsiderar — fora do escopo da empresa"]},
+  {id:5,objeto:"Desenvolvimento e implantação de aplicativo mobile para serviços ao cidadão — Android e iOS",orgao:"Prefeitura de Blumenau",uf:"SC",valor:180000,encerra:"2026-07-05",score:88,recomendacao:"PARTICIPAR",modalidade:"Dispensa",justificativa:"Excelente oportunidade de desenvolvimento mobile. Valor e prazo adequados.",requisitos:["Portfólio de apps publicados em produção","CNPJ ativo há mais de 2 anos"],riscos:["Prazo de entrega de 6 meses pode ser apertado","Necessidade de aprovação nas lojas Apple/Google"],documentos:["Portfólio com links dos apps","Certidões negativas","Contrato social"],proximos_passos:["Preparar portfólio de apps","Montar proposta técnica detalhada com cronograma"]},
+  {id:6,objeto:"Implantação de sistema ERP para gestão financeira, RH e patrimônio com migração de dados",orgao:"Fundação de Saúde do Estado do RS",uf:"RS",valor:1200000,encerra:"2026-06-20",score:75,recomendacao:"VERIFICAR",modalidade:"Concorrência",justificativa:"Alto valor e objeto alinhado, mas exigências técnicas rigorosas para setor saúde.",requisitos:["Experiência comprovada em ERP para setor público de saúde","Equipe mínima: 5 profissionais dedicados","Capital social mínimo R$ 200.000"],riscos:["Complexidade de migração de dados sensíveis de saúde","Capital social pode ser insuficiente","Concorrência de ERPs consolidados (TOTVS, Oracle)"],documentos:["Atestados de ERP em saúde pública","Balanço patrimonial","Certidões negativas completas"],proximos_passos:["Avaliar capacidade técnica para setor saúde","Verificar capital social da empresa","Considerar parceria com empresa maior"]},
+];
+
+const MODALIDADES = ["Pregão Eletrônico","Concorrência","Dispensa","Inexigibilidade"];
+const MODAL_CORES = ["#3b82f6","#a855f7","#22c55e","#facc15"];
+
+const UFS = [
+  {uf:"SC",qtd:98},{uf:"PR",qtd:71},{uf:"RS",qtd:53},
+  {uf:"SP",qtd:32},{uf:"MG",qtd:14},{uf:"RJ",qtd:9},
+];
+
+const TENDENCIA = [18,23,31,28,41,35,29];
+const DIAS = ["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"];
+
+// ── Navegação ──────────────────────────────────────────────────────────────
+
+function showPage(id, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + id).classList.add('active');
+  btn.classList.add('active');
+}
+
+// ── Dashboard ──────────────────────────────────────────────────────────────
+
+function initDashboard() {
+  // UF list
+  const max = UFS[0].qtd;
+  document.getElementById('uf-list').innerHTML = UFS.map(u =>
+    `<div class="uf-row">
+      <span class="uf-label">${u.uf}</span>
+      <div class="uf-track"><div class="uf-fill" style="width:${Math.round(u.qtd/max*100)}%"></div></div>
+      <span class="uf-count">${u.qtd}</span>
+    </div>`
+  ).join('');
+
+  // Top oportunidades
+  const top = LICITACOES.filter(l => l.score >= 65).sort((a,b) => b.score - a.score).slice(0,4);
+  document.getElementById('top-oportunidades').innerHTML = top.map(l =>
+    `<tr onclick="abrirModal(${l.id})" style="cursor:pointer">
+      <td class="lic-objeto">
+        <p>${l.objeto}</p>
+        <div class="lic-orgao">${l.orgao}</div>
+      </td>
+      <td style="font-family:var(--mono);font-size:12px">${fmtValor(l.valor)}</td>
+      <td>${scoreBar(l.score)}</td>
+      <td>${recBadge(l.recomendacao)}</td>
+    </tr>`
+  ).join('');
+
+  // Charts
+  new Chart(document.getElementById('chartTendencia'), {
+    type: 'bar',
+    data: {
+      labels: DIAS,
+      datasets: [{
+        data: TENDENCIA,
+        backgroundColor: 'rgba(59,130,246,0.5)',
+        borderColor: '#3b82f6',
+        borderWidth: 1,
+        borderRadius: 4,
+        label: 'Licitações coletadas',
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#7a8099', font: { size: 11 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: { ticks: { color: '#7a8099', font: { size: 11 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+      }
+    }
+  });
+
+  new Chart(document.getElementById('chartModal'), {
+    type: 'doughnut',
+    data: {
+      labels: MODALIDADES,
+      datasets: [{ data: [128,47,52,21], backgroundColor: MODAL_CORES, borderWidth: 0 }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#7a8099', font: { size: 10 }, padding: 8 } }
+      },
+      cutout: '60%',
+    }
+  });
+}
+
+// ── Tabela de licitações ───────────────────────────────────────────────────
+
+function initLicitacoes() {
+  // Preenche select de UF
+  const sel = document.getElementById('filtro-uf');
+  [...new Set(LICITACOES.map(l => l.uf))].sort().forEach(uf => {
+    const o = document.createElement('option');
+    o.value = uf; o.textContent = uf;
+    sel.appendChild(o);
+  });
+  filtrar();
+}
+
+function filtrar() {
+  const busca = document.getElementById('search').value.toLowerCase();
+  const uf = document.getElementById('filtro-uf').value;
+  const rec = document.getElementById('filtro-rec').value;
+  const score = parseInt(document.getElementById('filtro-score').value);
+
+  const filtradas = LICITACOES.filter(l =>
+    (!busca || l.objeto.toLowerCase().includes(busca) || l.orgao.toLowerCase().includes(busca)) &&
+    (!uf || l.uf === uf) &&
+    (!rec || l.recomendacao === rec) &&
+    l.score >= score
+  );
+
+  document.getElementById('count-badge').textContent = `${filtradas.length} registros`;
+  document.getElementById('lic-tbody').innerHTML = filtradas.map(l =>
+    `<tr onclick="abrirModal(${l.id})" style="cursor:pointer">
+      <td class="lic-objeto"><p>${l.objeto}</p><div class="lic-orgao">${l.orgao}</div></td>
+      <td><span class="badge badge-blue">${l.uf}</span></td>
+      <td style="font-family:var(--mono);font-size:12px">${fmtValor(l.valor)}</td>
+      <td style="font-size:12px;color:var(--muted)">${l.encerra}</td>
+      <td>${scoreBar(l.score)}</td>
+      <td>${recBadge(l.recomendacao)}</td>
+      <td><button class="btn" onclick="event.stopPropagation();abrirModal(${l.id})">Ver</button></td>
+    </tr>`
+  ).join('');
+}
+
+// ── Modal detalhe ──────────────────────────────────────────────────────────
+
+function abrirModal(id) {
+  const l = LICITACOES.find(x => x.id === id);
+  if (!l) return;
+  const modal = document.getElementById('modal-content');
+  const recClass = l.recomendacao === 'PARTICIPAR' ? 'rec-participar'
+    : l.recomendacao === 'VERIFICAR' ? 'rec-verificar' : 'rec-nao';
+  const recEmoji = l.recomendacao === 'PARTICIPAR' ? '✅' : l.recomendacao === 'VERIFICAR' ? '⚠️' : '❌';
+
+  modal.innerHTML = `
+    <div class="modal-header">
+      <div class="modal-title">${l.objeto}</div>
+      <button class="modal-close" onclick="document.getElementById('modal-overlay').classList.remove('open')">✕</button>
+    </div>
+    <div class="modal-section">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        <span class="rec-badge ${recClass}">${recEmoji} ${l.recomendacao}</span>
+        <span style="font-family:var(--mono);font-size:18px;font-weight:700">${l.score}/100</span>
+      </div>
+      <p style="font-size:13px;color:var(--muted)">${l.justificativa}</p>
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Informações</div>
+      <div class="info-row"><span class="info-key">Órgão</span><span>${l.orgao}</span></div>
+      <div class="info-row"><span class="info-key">Estado</span><span>${l.uf}</span></div>
+      <div class="info-row"><span class="info-key">Modalidade</span><span>${l.modalidade}</span></div>
+      <div class="info-row"><span class="info-key">Valor estimado</span><span style="font-family:var(--mono)">${fmtValor(l.valor)}</span></div>
+      <div class="info-row"><span class="info-key">Encerramento</span><span>${l.encerra}</span></div>
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">⚠️ Riscos</div>
+      ${l.riscos.map(r => `<span class="chip chip-risk">${r}</span>`).join('')}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">📝 Requisitos críticos</div>
+      ${l.requisitos.map(r => `<span class="chip chip-req">${r}</span>`).join('')}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">📄 Documentos necessários</div>
+      ${l.documentos.map(d => `<span class="chip chip-doc">${d}</span>`).join('')}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">🚀 Próximos passos</div>
+      <ol style="font-size:13px;color:var(--text);padding-left:18px;line-height:2">
+        ${l.proximos_passos.map(p => `<li>${p}</li>`).join('')}
+      </ol>
+    </div>
+  `;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function fecharModal(e) {
+  if (e.target === document.getElementById('modal-overlay'))
+    document.getElementById('modal-overlay').classList.remove('open');
+}
+
+// ── Análise com IA (chama API real se configurada) ─────────────────────────
+
+async function executarAnalise() {
+  const objeto = document.getElementById('ia-objeto').value.trim();
+  if (!objeto) { alert('Informe o objeto da licitação.'); return; }
+
+  const edital = document.getElementById('ia-edital').value.trim();
+  const valor = document.getElementById('ia-valor').value;
+  const modalidade = document.getElementById('ia-modalidade').value;
+  const orgao = document.getElementById('ia-orgao').value;
+  const uf = document.getElementById('ia-uf').value;
+
+  const res = document.getElementById('ia-resultado');
+  res.innerHTML = `<div class="loading"><div class="dot"></div><div class="dot"></div><div class="dot"></div><span style="font-size:13px;color:var(--muted);margin-left:8px">Analisando com IA...</span></div>`;
+
+  try {
+    const resp = await fetch('/ciclo', { method: 'POST' }).catch(() => null);
+    // Se API disponível, usar. Caso contrário, simular.
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Simulação de resultado (em produção, vem da API /licitacoes/{id})
+    const scoreSimulado = Math.floor(50 + Math.random() * 50);
+    const rec = scoreSimulado >= 80 ? 'PARTICIPAR' : scoreSimulado >= 60 ? 'VERIFICAR' : 'NÃO PARTICIPAR';
+    const recClass = rec === 'PARTICIPAR' ? 'rec-participar' : rec === 'VERIFICAR' ? 'rec-verificar' : 'rec-nao';
+
+    res.innerHTML = `
+      <div style="margin-bottom:16px;display:flex;align-items:center;gap:12px">
+        <span class="rec-badge ${recClass}">${rec === 'PARTICIPAR' ? '✅' : rec === 'VERIFICAR' ? '⚠️' : '❌'} ${rec}</span>
+        <span style="font-family:var(--mono);font-size:20px;font-weight:700">${scoreSimulado}/100</span>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:16px">Objeto ${scoreSimulado >= 70 ? 'alinhado' : 'parcialmente alinhado'} ao perfil da empresa. ${rec === 'PARTICIPAR' ? 'Boa oportunidade para participar.' : 'Verifique os requisitos antes de prosseguir.'}</p>
+      <div style="font-size:12px;color:var(--muted);padding:12px;background:var(--surface2);border-radius:8px">
+        <strong style="color:var(--text)">⚙️ Configure a API</strong><br>
+        Para análise real, configure a ANTHROPIC_API_KEY nas configurações e use a API REST em <code style="color:var(--accent2)">localhost:8000</code>.
+      </div>
+    `;
+  } catch(e) {
+    res.innerHTML = `<p style="color:var(--red);font-size:13px">Erro ao conectar à API. Inicie o servidor com <code>uvicorn agendador:api</code>.</p>`;
+  }
+}
+
+// ── Simulação de ciclo ─────────────────────────────────────────────────────
+
+async function simularCiclo() {
+  const btn = event.target;
+  btn.textContent = '⏳ Executando...';
+  btn.disabled = true;
+  await new Promise(r => setTimeout(r, 2500));
+  document.getElementById('m-total').textContent = '251';
+  document.getElementById('m-op').textContent = '38';
+  btn.textContent = '✅ Ciclo concluído!';
+  setTimeout(() => { btn.textContent = '▶ Executar ciclo agora'; btn.disabled = false; }, 2000);
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function fmtValor(v) {
+  if (v >= 1000000) return 'R$ ' + (v/1000000).toFixed(1).replace('.',',') + 'M';
+  if (v >= 1000) return 'R$ ' + (v/1000).toFixed(0) + 'k';
+  return 'R$ ' + v;
+}
+
+function scoreBar(s) {
+  const cls = s >= 75 ? 'score-high' : s >= 50 ? 'score-mid' : 'score-low';
+  return `<div class="score-bar">
+    <span class="score-num" style="color:${s>=75?'var(--green)':s>=50?'var(--yellow)':'var(--red)'}">${s}</span>
+    <div class="score-track"><div class="score-fill ${cls}" style="width:${s}%"></div></div>
+  </div>`;
+}
+
+function recBadge(r) {
+  const map = {
+    'PARTICIPAR': 'badge-green',
+    'VERIFICAR': 'badge-yellow',
+    'NÃO PARTICIPAR': 'badge-red',
+  };
+  const labels = { 'PARTICIPAR':'✅ Participar','VERIFICAR':'⚠️ Verificar','NÃO PARTICIPAR':'❌ Não participar' };
+  return `<span class="badge ${map[r]||'badge-blue'}" style="font-size:10px">${labels[r]||r}</span>`;
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+
+initDashboard();
+initLicitacoes();
+</script>
+</body>
+</html>
