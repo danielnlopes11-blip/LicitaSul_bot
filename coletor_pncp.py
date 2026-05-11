@@ -1,20 +1,6 @@
 """
 coletor_pncp.py
-Coleta licitacoes da API oficial do PNCP.
-
-Codigos de modalidade (Lei 14.133/2021):
-  1  - Leilao Eletronico
-  2  - Dialogo Competitivo
-  3  - Concurso
-  4  - Concorrencia
-  5  - Concorrencia Internacional
-  6  - Pregao Eletronico        ← principal
-  7  - Dispensa de Licitacao
-  8  - Inexigibilidade
-  9  - Manifestacao de Interesse
-  10 - Pre-qualificacao
-  11 - Credenciamento
-  12 - Leilao Presencial
+Coleta licitacoes da API do PNCP com timeout generoso e retry automatico.
 """
 
 import httpx
@@ -26,8 +12,10 @@ from datetime import datetime, timedelta
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-BASE_URL = "https://pncp.gov.br/api/consulta/v1"
-HEADERS  = {"Accept": "application/json", "User-Agent": "BotLicitacoes/1.0"}
+BASE_URL   = "https://pncp.gov.br/api/consulta/v1"
+HEADERS    = {"Accept": "application/json", "User-Agent": "BotLicitacoes/1.0"}
+TIMEOUT    = 60   # segundos — API do PNCP pode ser lenta
+MAX_RETRY  = 3    # tentativas por requisição
 
 MODALIDADES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
@@ -39,37 +27,56 @@ FILTROS = {
     ],
     "valor_minimo": 10_000,
     "valor_maximo": 5_000_000,
-    "estados": [],  # vazio = todos
+    "estados": [],
 }
 
 
-# ── HTTP helpers ──────────────────────────────────────────────────────────────
+# ── HTTP com retry ────────────────────────────────────────────────────────────
 
 async def get_json(url: str, params: dict) -> dict | None:
     """
-    Faz GET e retorna o JSON ou None se:
-    - Resposta vazia (body em branco)
-    - Status 204 (No Content)
-    - JSON inválido (modalidade sem dados retorna body vazio com 200/204)
+    GET com timeout de 60s e até 3 tentativas automáticas.
+    Retorna None se: sem conteúdo, timeout após retries, erro HTTP.
     """
-    async with httpx.AsyncClient(headers=HEADERS, timeout=30) as client:
-        resp = await client.get(url, params=params)
-
-        # Sem conteúdo = sem dados para esta modalidade/período
-        if resp.status_code == 204 or not resp.content.strip():
-            return None
-
-        # Erro real do servidor
-        if resp.status_code >= 400:
-            log.warning(f"HTTP {resp.status_code} | {url} | {resp.text[:150]}")
-            return None
-
-        # Tenta parsear JSON
+    for tentativa in range(1, MAX_RETRY + 1):
         try:
-            return resp.json()
-        except Exception:
-            # Corpo não é JSON válido = sem resultados
-            return None
+            async with httpx.AsyncClient(
+                headers=HEADERS,
+                timeout=httpx.Timeout(TIMEOUT),
+            ) as client:
+                resp = await client.get(url, params=params)
+
+            # Sem conteúdo = modalidade sem dados no período
+            if resp.status_code == 204 or not resp.content.strip():
+                return None
+
+            # Erro do servidor
+            if resp.status_code >= 400:
+                log.warning(f"HTTP {resp.status_code} | params={params} | {resp.text[:100]}")
+                return None
+
+            # Parse JSON
+            try:
+                return resp.json()
+            except Exception:
+                return None   # body não é JSON = sem dados
+
+        except httpx.ReadTimeout:
+            log.warning(f"Timeout (tentativa {tentativa}/{MAX_RETRY}) | params={params}")
+            if tentativa < MAX_RETRY:
+                await asyncio.sleep(5 * tentativa)   # espera 5s, 10s antes de tentar de novo
+            else:
+                log.error(f"Desistindo após {MAX_RETRY} timeouts | params={params}")
+                return None   # pula esta modalidade, não derruba o processo
+
+        except Exception as e:
+            log.error(f"Erro inesperado (tentativa {tentativa}): {e}")
+            if tentativa < MAX_RETRY:
+                await asyncio.sleep(3)
+            else:
+                return None
+
+    return None
 
 
 # ── Filtros e formatação ──────────────────────────────────────────────────────
@@ -118,10 +125,6 @@ def formatar(raw: dict) -> dict:
 # ── Coleta por período ────────────────────────────────────────────────────────
 
 async def coletar_periodo(dias_atras: int = 2) -> list:
-    """
-    Coleta licitações publicadas nos últimos N dias,
-    percorrendo todas as modalidades.
-    """
     from database import licitacao_ja_existe, salvar_licitacoes
 
     hoje   = datetime.now()
@@ -134,19 +137,19 @@ async def coletar_periodo(dias_atras: int = 2) -> list:
     for modalidade in MODALIDADES:
         pagina = 1
         while True:
-            params = {
-                "dataInicial":                 inicio,
-                "dataFinal":                   fim,
-                "codigoModalidadeContratacao": modalidade,
-                "pagina":                      pagina,
-                "tamanhoPagina":               50,
-            }
+            resultado = await get_json(
+                f"{BASE_URL}/contratacoes/publicacao",
+                {
+                    "dataInicial":                 inicio,
+                    "dataFinal":                   fim,
+                    "codigoModalidadeContratacao": modalidade,
+                    "pagina":                      pagina,
+                    "tamanhoPagina":               50,
+                },
+            )
 
-            resultado = await get_json(f"{BASE_URL}/contratacoes/publicacao", params)
-
-            # None = sem dados para esta modalidade, vai para próxima
             if resultado is None:
-                break
+                break   # sem dados ou erro — próxima modalidade
 
             dados         = resultado.get("data", [])
             total_paginas = resultado.get("totalPaginas", 1)
@@ -166,23 +169,22 @@ async def coletar_periodo(dias_atras: int = 2) -> list:
             if pagina >= total_paginas or pagina >= 3:
                 break
             pagina += 1
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.5)
 
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
 
     if novas:
         salvar_licitacoes(novas)
         log.info(f"✅ {len(novas)} novas licitacoes salvas.")
     else:
-        log.info("Nenhuma licitacao encontrada com os filtros atuais.")
+        log.info("Nenhuma licitacao nova encontrada.")
 
     return novas
 
 
-# ── Coleta abertas (fallback) ─────────────────────────────────────────────────
+# ── Fallback: abertas ─────────────────────────────────────────────────────────
 
 async def coletar_abertas() -> list:
-    """Licitações com propostas abertas agora — não precisa de data nem modalidade."""
     from database import licitacao_ja_existe, salvar_licitacoes
 
     novas  = []
@@ -191,7 +193,7 @@ async def coletar_abertas() -> list:
     for pagina in range(1, 6):
         resultado = await get_json(
             f"{BASE_URL}/contratacoes/proposta",
-            {"pagina": pagina, "tamanhoPagina": 50}
+            {"pagina": pagina, "tamanhoPagina": 50},
         )
         if resultado is None:
             break
@@ -211,13 +213,13 @@ async def coletar_abertas() -> list:
 
         if pagina >= total_paginas:
             break
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
 
     if novas:
         salvar_licitacoes(novas)
         log.info(f"✅ {len(novas)} licitacoes abertas salvas.")
     else:
-        log.info("Nenhuma licitacao aberta encontrada com os filtros.")
+        log.info("Nenhuma licitacao aberta encontrada.")
 
     return novas
 
