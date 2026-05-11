@@ -1,266 +1,207 @@
 """
 analisador_ia.py
-Analisa editais de licitação usando Groq ou Gemini (ambos gratuitos).
-
-Configure no .env:
-    IA_PROVIDER=groq          # ou: gemini
-    GROQ_API_KEY=gsk_...      # obter em: console.groq.com
-    GEMINI_API_KEY=AIza...    # obter em: aistudio.google.com
+Analisa editais usando Groq ou Gemini.
+Trata rate limit (429) com espera automatica baseada no header Retry-After.
 """
 
 import os
 import json
 import logging
 import re
+import asyncio
 import httpx
 from dotenv import load_dotenv
-from database import (
-    buscar_licitacoes, buscar_por_id,
-    salvar_analise, buscar_analise,
-)
+from database import buscar_licitacoes, buscar_por_id, salvar_analise
 
 load_dotenv()
 log = logging.getLogger(__name__)
 
-# ── Configuração do provider ─────────────────────────────────────────────────
-
-IA_PROVIDER  = os.getenv("IA_PROVIDER",   "groq").lower()   # "groq" ou "gemini"
+IA_PROVIDER    = os.getenv("IA_PROVIDER",   "groq").lower()
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY",   "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GROQ_MODEL     = os.getenv("GROQ_MODEL",   "llama-3.3-70b-versatile")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
-# Modelos recomendados (gratuitos)
-GROQ_MODEL   = os.getenv("GROQ_MODEL",   "llama-3.3-70b-versatile")  # rápido e capaz
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")          # rápido e gratuito
+# Pausa entre análises para não estourar o rate limit
+# Groq free: 12.000 tokens/min → ~1 análise a cada 8s com segurança
+PAUSA_ENTRE_ANALISES = int(os.getenv("PAUSA_ANALISE_SEGUNDOS", "10"))
+MAX_RETRY_RATE_LIMIT = 4   # tentativas quando receber 429
 
-
-# ── Perfil da empresa ────────────────────────────────────────────────────────
 
 PERFIL_EMPRESA = {
     "nome": "Minha Empresa Ltda",
     "cnpj": "00.000.000/0001-00",
-    "porte": "ME",   # ME | EPP | Médio | Grande
+    "porte": "ME",
     "uf_sede": "SC",
     "segmentos": [
         "Desenvolvimento de software",
         "Consultoria em TI",
-        "Suporte técnico",
-        "Integração de sistemas",
+        "Suporte tecnico",
+        "Integracao de sistemas",
     ],
     "certidoes_disponiveis": [
         "CND Federal", "CND Estadual", "CND Municipal",
-        "FGTS", "CNDT", "Balanço Patrimonial",
-    ],
-    "experiencia": [
-        "Sistemas de gestão pública (ERP)",
-        "Portais web e aplicativos móveis",
-        "Infraestrutura e cloud",
+        "FGTS", "CNDT", "Balanco Patrimonial",
     ],
     "faturamento_anual_reais": 500_000,
-    "observacoes": "Empresa com 5 anos de mercado, preferência por licitações regionais.",
+    "observacoes": "Empresa com 5 anos de mercado, preferencia por licitacoes regionais.",
 }
 
-
-# ── Prompt ───────────────────────────────────────────────────────────────────
-
 PROMPT_SISTEMA = """
-Você é um especialista em licitações públicas brasileiras com 20 anos de experiência.
-Sua função é analisar editais e oportunidades de licitação, avaliando se fazem sentido
-para uma empresa participar, identificando riscos e requisitos críticos.
-
-Seja objetivo, direto e prático. Baseie sua análise na legislação vigente
-(Lei 14.133/2021 - Nova Lei de Licitações).
-
-RETORNE APENAS JSON VÁLIDO. Sem texto antes ou depois. Sem markdown. Sem blocos de código.
+Voce e um especialista em licitacoes publicas brasileiras.
+Analise editais e avalie se fazem sentido para a empresa participar.
+Baseie sua analise na Lei 14.133/2021.
+RETORNE APENAS JSON VALIDO. Sem texto antes ou depois. Sem markdown.
 """
 
-def montar_prompt(licitacao: dict, texto_edital: str = "") -> str:
-    perfil_str = json.dumps(PERFIL_EMPRESA, ensure_ascii=False, indent=2)
+def montar_prompt(licitacao: dict) -> str:
     return f"""
-Analise esta licitação e avalie se a empresa deve participar.
+Analise esta licitacao:
 
-## DADOS DA LICITAÇÃO
-- Objeto: {licitacao.get('objeto', '')}
-- Modalidade: {licitacao.get('modalidade', '')}
-- Situação: {licitacao.get('situacao', '')}
-- Valor Estimado: R$ {licitacao.get('valor_estimado', 0):,.2f}
-- Órgão: {licitacao.get('orgao_nome', '')} ({licitacao.get('orgao_uf', '')})
-- Data Publicação: {licitacao.get('data_publicacao', '')}
-- Data Encerramento: {licitacao.get('data_encerramento', '')}
+OBJETO: {licitacao.get('objeto', '')}
+MODALIDADE: {licitacao.get('modalidade', '')}
+VALOR ESTIMADO: R$ {licitacao.get('valor_estimado', 0):,.2f}
+ORGAO: {licitacao.get('orgao_nome', '')} ({licitacao.get('orgao_uf', '')})
+ENCERRAMENTO: {licitacao.get('data_encerramento', 'N/D')}
 
-## ITENS DA LICITAÇÃO
-{json.dumps(licitacao.get('itens', []), ensure_ascii=False)[:1500]}
+PERFIL DA EMPRESA:
+{json.dumps(PERFIL_EMPRESA, ensure_ascii=False)}
 
-## TEXTO DO EDITAL (trecho)
-{texto_edital[:3000] if texto_edital else "Edital não disponível. Analise com base nos dados acima."}
-
-## PERFIL DA EMPRESA
-{perfil_str}
-
-## RETORNE SOMENTE ESTE JSON (sem markdown, sem texto extra):
+Retorne SOMENTE este JSON:
 {{
   "score": <0 a 100>,
-  "oportunidade": "<resumo em 2 frases>",
-  "alinhamento_empresa": "<como o objeto se alinha com a empresa>",
+  "oportunidade": "<resumo em 1 frase>",
   "requisitos_criticos": ["<req 1>", "<req 2>"],
   "documentos_necessarios": ["<doc 1>", "<doc 2>"],
-  "riscos": ["<risco 1>", "<risco 2>"],
-  "pontos_positivos": ["<ponto 1>"],
+  "riscos": ["<risco 1>"],
   "recomendacao": "PARTICIPAR",
-  "justificativa_recomendacao": "<motivo em 1-2 frases>",
-  "proximos_passos": ["<ação 1>", "<ação 2>"]
+  "justificativa_recomendacao": "<motivo curto>",
+  "proximos_passos": ["<acao 1>"]
 }}
-
-O campo "recomendacao" deve ser exatamente um de: PARTICIPAR | NÃO PARTICIPAR | VERIFICAR
+O campo recomendacao deve ser: PARTICIPAR | NAO PARTICIPAR | VERIFICAR
 """
 
 
-# ── Clientes de IA ───────────────────────────────────────────────────────────
+# ── Clientes IA com retry no rate limit ──────────────────────────────────────
 
 async def chamar_groq(prompt: str) -> str:
-    """
-    Chama a API do Groq — compatível com OpenAI.
-    Plano gratuito: 14.400 requisições/dia, 6.000 tokens/min.
-    Obter key gratuita: https://console.groq.com
-    """
     if not GROQ_API_KEY:
-        raise ValueError("GROQ_API_KEY não configurada no .env")
+        raise ValueError("GROQ_API_KEY nao configurada")
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": GROQ_MODEL,
-                "messages": [
-                    {"role": "system", "content": PROMPT_SISTEMA},
-                    {"role": "user",   "content": prompt},
-                ],
-                "temperature": 0.2,
-                "max_tokens": 1500,
-                "response_format": {"type": "json_object"},  # força JSON puro
-            },
-        )
+    for tentativa in range(1, MAX_RETRY_RATE_LIMIT + 1):
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": GROQ_MODEL,
+                    "messages": [
+                        {"role": "system", "content": PROMPT_SISTEMA},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 600,          # reduzido para economizar tokens
+                    "response_format": {"type": "json_object"},
+                },
+            )
+
+        if resp.status_code == 429:
+            # Lê o tempo de espera sugerido pelo Groq
+            retry_after = int(resp.headers.get("retry-after", "15"))
+            # Também tenta extrair do body ("try again in X.Xs")
+            try:
+                body = resp.json()
+                msg  = body.get("error", {}).get("message", "")
+                match = re.search(r"try again in (\d+\.?\d*)s", msg)
+                if match:
+                    retry_after = int(float(match.group(1))) + 2
+            except Exception:
+                pass
+
+            log.warning(f"Rate limit Groq (tentativa {tentativa}/{MAX_RETRY_RATE_LIMIT}). Aguardando {retry_after}s...")
+            await asyncio.sleep(retry_after)
+            continue
+
         resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        return resp.json()["choices"][0]["message"]["content"]
+
+    raise Exception("Rate limit Groq esgotado após todas as tentativas")
 
 
 async def chamar_gemini(prompt: str) -> str:
-    """
-    Chama a API do Gemini (Google AI Studio).
-    Plano gratuito: 1.500 requisições/dia, 1M tokens/min (flash).
-    Obter key gratuita: https://aistudio.google.com/apikey
-    """
     if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY não configurada no .env")
+        raise ValueError("GEMINI_API_KEY nao configurada")
 
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    )
+    for tentativa in range(1, MAX_RETRY_RATE_LIMIT + 1):
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        )
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, json={
+                "system_instruction": {"parts": [{"text": PROMPT_SISTEMA}]},
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "maxOutputTokens": 600,
+                    "responseMimeType": "application/json",
+                },
+            })
 
-    payload = {
-        "system_instruction": {
-            "parts": [{"text": PROMPT_SISTEMA}]
-        },
-        "contents": [
-            {"role": "user", "parts": [{"text": prompt}]}
-        ],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 1500,
-            "responseMimeType": "application/json",  # força JSON puro
-        },
-    }
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("retry-after", "30"))
+            log.warning(f"Rate limit Gemini (tentativa {tentativa}). Aguardando {retry_after}s...")
+            await asyncio.sleep(retry_after)
+            continue
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(url, json=payload)
         resp.raise_for_status()
-        data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+    raise Exception("Rate limit Gemini esgotado após todas as tentativas")
 
 
 async def chamar_ia(prompt: str) -> str:
-    """Despacha para o provider configurado em IA_PROVIDER."""
     if IA_PROVIDER == "gemini":
         return await chamar_gemini(prompt)
-    return await chamar_groq(prompt)   # padrão: groq
+    return await chamar_groq(prompt)
 
 
-# ── Análise principal ────────────────────────────────────────────────────────
+# ── Análise principal ─────────────────────────────────────────────────────────
 
-async def analisar_licitacao(licitacao: dict, texto_edital: str = "") -> dict:
-    """Envia a licitação para a IA e retorna análise estruturada."""
-    prompt = montar_prompt(licitacao, texto_edital)
-
+async def analisar_licitacao(licitacao: dict) -> dict:
+    prompt = montar_prompt(licitacao)
     try:
-        texto = await chamar_ia(prompt)
-
-        # Remove eventuais blocos de código markdown que o modelo insira
-        texto = re.sub(r"```json|```", "", texto).strip()
-
+        texto  = await chamar_ia(prompt)
+        texto  = re.sub(r"```json|```", "", texto).strip()
         analise = json.loads(texto)
-        log.info(
-            f"✅ [{IA_PROVIDER.upper()}] id={licitacao.get('id')} "
-            f"score={analise.get('score')} rec={analise.get('recomendacao')}"
-        )
+        log.info(f"[{IA_PROVIDER.upper()}] id={licitacao.get('id')} score={analise.get('score')} rec={analise.get('recomendacao')}")
         return analise
-
     except json.JSONDecodeError as e:
-        log.error(f"JSON inválido: {e} | texto recebido: {texto[:300]}")
+        log.error(f"JSON invalido: {e}")
         return {"score": 0, "recomendacao": "ERRO", "oportunidade": "Falha no parse JSON"}
-    except httpx.HTTPStatusError as e:
-        log.error(f"Erro HTTP {e.response.status_code}: {e.response.text[:300]}")
-        raise
     except Exception as e:
-        log.error(f"Erro inesperado na análise: {e}")
+        log.error(f"Erro na analise: {e}")
         raise
-
-
-# ── Download de edital ────────────────────────────────────────────────────────
-
-async def baixar_texto_edital(documentos: list) -> str:
-    """Tenta baixar o edital principal e extrair texto."""
-    for doc in documentos:
-        nome = (doc.get("titulo") or doc.get("nomeArquivo") or "").lower()
-        url  = doc.get("uri") or doc.get("url") or ""
-        if not url:
-            continue
-        if any(k in nome for k in ("edital", "termo", "chamamento")):
-            try:
-                async with httpx.AsyncClient(timeout=20) as client:
-                    resp = await client.get(url, follow_redirects=True)
-                    if resp.status_code == 200:
-                        ct = resp.headers.get("content-type", "")
-                        if "pdf" in ct:
-                            return f"[PDF disponível em: {url}]"
-                        return resp.text[:5000]
-            except Exception as e:
-                log.warning(f"Falha ao baixar edital {url}: {e}")
-    return ""
 
 
 # ── Pipeline em lote ──────────────────────────────────────────────────────────
 
-async def analisar_pendentes(score_minimo_alerta: int = 65, max_por_ciclo: int = 20):
-    """Analisa todas as licitações sem análise no banco."""
-    import asyncio
-
-    sem_analise = buscar_licitacoes(sem_analise=True, limit=max_por_ciclo)
-    log.info(f"Analisando {len(sem_analise)} licitações com [{IA_PROVIDER.upper()}]...")
-
+async def analisar_pendentes(score_minimo_alerta: int = 65, max_por_ciclo: int = 10) -> list:
+    """
+    Analisa licitações sem análise.
+    max_por_ciclo limitado a 10 por padrão para respeitar rate limit do Groq free.
+    Com pausa de 10s entre cada análise = ~100s para 10 análises.
+    """
+    sem_analise  = buscar_licitacoes(sem_analise=True, limit=max_por_ciclo)
     oportunidades = []
 
-    for lic in sem_analise:
-        docs = json.loads(lic.get("documentos") or "[]")
-        texto_edital = await baixar_texto_edital(docs)
+    log.info(f"Analisando {len(sem_analise)} licitacoes com [{IA_PROVIDER.upper()}] (pausa {PAUSA_ENTRE_ANALISES}s entre cada)...")
 
+    for i, lic in enumerate(sem_analise):
         try:
-            analise = await analisar_licitacao(lic, texto_edital)
-        except Exception:
+            analise = await analisar_licitacao(lic)
+        except Exception as e:
+            log.error(f"Pulando licitacao id={lic['id']}: {e}")
             continue
 
         salvar_analise(lic["id"], analise)
@@ -268,29 +209,26 @@ async def analisar_pendentes(score_minimo_alerta: int = 65, max_por_ciclo: int =
         if analise.get("score", 0) >= score_minimo_alerta:
             oportunidades.append({**lic, "analise": analise})
 
-        await asyncio.sleep(0.5)   # evita rate limit
+        # Pausa entre análises para não estourar rate limit
+        if i < len(sem_analise) - 1:
+            log.info(f"Aguardando {PAUSA_ENTRE_ANALISES}s para respeitar rate limit...")
+            await asyncio.sleep(PAUSA_ENTRE_ANALISES)
 
     log.info(f"✅ {len(oportunidades)} oportunidades com score >= {score_minimo_alerta}")
     return oportunidades
 
 
-# ── CLI de teste ──────────────────────────────────────────────────────────────
+# ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import asyncio, sys
-
-    print(f"🤖 Provider ativo : {IA_PROVIDER.upper()}")
-    print(f"📦 Modelo         : {GROQ_MODEL if IA_PROVIDER == 'groq' else GEMINI_MODEL}")
-    print()
+    import sys
+    print(f"Provider: {IA_PROVIDER.upper()} | Modelo: {GROQ_MODEL if IA_PROVIDER == 'groq' else GEMINI_MODEL}")
+    print(f"Pausa entre analises: {PAUSA_ENTRE_ANALISES}s | Max por ciclo: 10")
 
     if len(sys.argv) > 1:
-        lid = int(sys.argv[1])
-        lic = buscar_por_id(lid)
+        lic = buscar_por_id(int(sys.argv[1]))
         if lic:
             resultado = asyncio.run(analisar_licitacao(lic))
             print(json.dumps(resultado, ensure_ascii=False, indent=2))
-        else:
-            print(f"Licitação id={lid} não encontrada.")
     else:
-        resultados = asyncio.run(analisar_pendentes())
-        print(json.dumps(resultados, ensure_ascii=False, indent=2))
+        asyncio.run(analisar_pendentes())
